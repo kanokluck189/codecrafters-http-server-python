@@ -1,118 +1,101 @@
 import socket
-from threading import Thread
-import sys
-from pathlib import Path
+import threading
+import argparse
+import os
+import gzip
 
 
-class server_side:
-    def __init__(self, host, port):
-        self.host = host
-        self.port = port
-        self.running = True
-        self.start_server()
+def handle_file_get_request(filename: str):
+    path = os.path.join(files_dir, filename)
+    if os.path.isfile(path):
+        with open(path, "r") as file:
+            content = file.read()
+        return content
+    return None
 
-    def start_server(self):
-        with socket.create_server((self.host, self.port), reuse_port=True) as server:
-            print(f"Server is open on port {self.port}")
-            while self.running:
-                connection, address = server.accept()
-                # Spawn a thread for each client to handle requests concurrently
-                thread = Thread(target=self.handle_client, args=(connection,))
-                thread.daemon = True
-                thread.start()
 
-    def handle_client(self, connection):
-        # Kept connection open across multiple requests for HTTP/1.1 persistence
-        try:
-            while self.running:
-                recv = connection.recv(1024)
-                if not recv:
-                    break  # Client closed the connection
-                
-                respond = self.user_request(recv)
-                connection.sendall(respond)
-                
-                # Check if the client explicitly requested to close the connection
-                if b"connection: close" in recv.lower():
-                    break
-        except Exception as e:
-            print(e)
-        finally:
-            connection.close()
+def handle_file_post_request(filename: str, response_body: str):
+    if os.path.exists(files_dir):
+        with open(os.path.join(files_dir, filename), "w") as file:
+            file.write(response_body)
+            return True
+    return False
 
-    def user_request(self, recv):
-        request = recv.decode(errors="ignore").split("\r\n")
-        # Parsing safety
-        if not request or not request[0]:
-            return b"HTTP/1.1 400 Bad Request\r\n\r\n"
 
-        request_line = request[0].split(" ")
-        if len(request_line) < 2:
-            return b"HTTP/1.1 400 Bad Request\r\n\r\n"
-
-        method = request_line[0]
-        path = request_line[1]
-        paths = path.split("/")
-        user_agent = ""
-        
-        for line in request:
-            if line.lower().startswith("user-agent:"):
-                user_agent = line.split(":", 1)[1].strip()
+def handle_request(client_conn, client_addr):
+    print(f"Recieved connection from: {client_addr}")
+    while True:
+        request = client_conn.recv(1024).decode().split("\r\n")
+        request_line = request[0]
+        headers = request[1:-1]
+        response_body = request[-1]
+        method, path, version = request_line.split(" ")
 
         if method == "GET":
-            if len(paths) > 1 and paths[1] == "echo":
-                echo = paths[2] if len(paths) > 2 else ""
-                data = f"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {len(echo)}\r\n\r\n{echo}"
-                return data.encode()
-            elif len(paths) > 1 and paths[1] == "user-agent":
-                data = f"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {len(user_agent)}\r\n\r\n{user_agent}"
-                return data.encode()
-            elif path == "/":
-                return b"HTTP/1.1 200 OK\r\n\r\n"
-            elif len(paths) > 1 and paths[1] == "quit":
-                self.running = False
-                return b"HTTP/1.1 200 OK\r\n\r\n"
-            elif len(paths) > 1 and paths[1] == "files" and len(paths) > 2:
-                if "--directory" in sys.argv:
-                    dir_index = sys.argv.index("--directory") + 1
-                    file_path = Path(f"/{sys.argv[dir_index]}/{paths[2]}")
+            if path == "/":
+                response = "HTTP/1.1 200 OK\r\n\r\n"
+                client_conn.sendall(response.encode())
+            elif path.startswith("/echo/"):
+                content = path.split("/")[2]
+                content_len = len(content)
+                response = f"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {content_len}\r\n\r\n{content}"
+                for header in headers:
+                    if header.startswith("Accept-Encoding"):
+                        if "gzip" in header:
+                            compressed_body = gzip.compress(content.encode())
+                            compressed_body_len = len(compressed_body)
+                            response = f"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Encoding: gzip\r\nContent-Length: {compressed_body_len}\r\n\r\n"
+                            client_conn.sendall(response.encode() + compressed_body)
+                            break
+                client_conn.sendall(response.encode())
+            elif path.startswith("/user-agent"):
+                user_agent = None
+                for header in headers:
+                    if header.startswith("User-Agent"):
+                        user_agent = headers[1].split(" ")[1]
+                if user_agent:
+                    print(f"Parsed User-Agent: {user_agent}")
+                    response = f"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {len(user_agent)}\r\n\r\n{user_agent}"
+                    client_conn.sendall(response.encode())
+            elif path.startswith("/files/"):
+                filename = path.split("/")[2]
+                content = handle_file_get_request(filename)
+                if content:
+                    response = f"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {len(content)}\r\n\r\n{content}"
+                    client_conn.sendall(response.encode())
                 else:
-                    file_path = Path(f"./{paths[2]}")
-
-                if file_path.exists() and file_path.is_file():
-                    with open(file_path, "rb") as file:
-                        content = file.read()
-                        data = b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: " + str(len(content)).encode() + b"\r\n\r\n" + content
-                        return data
-                else:
-                    return b"HTTP/1.1 404 Not Found\r\n\r\n"
+                    response = "HTTP/1.1 404 Not Found\r\n\r\n"
+                    client_conn.sendall(response.encode())
             else:
-                return b"HTTP/1.1 404 Not Found\r\n\r\n"
+                response = "HTTP/1.1 404 Not Found\r\n\r\n"
+                client_conn.sendall(response.encode())
 
         elif method == "POST":
-            if len(paths) > 1 and paths[1] == "files" and len(paths) > 2:
-                if "--directory" in sys.argv:
-                    dir_index = sys.argv.index("--directory") + 1
-                    file_path = Path(f"/{sys.argv[dir_index]}/{paths[2]}")
-                else:
-                    file_path = Path(f"./{paths[2]}")
-
-                # Split header and body to get POST payload
-                try:
-                    header_data, body_data = recv.split(b"\r\n\r\n", 1)
-                except ValueError:
-                    body_data = b""
-
-                file_path.write_bytes(body_data)
-                return b"HTTP/1.1 201 Created\r\n\r\n"
-            else:
-                return b"HTTP/1.1 404 Not Found\r\n\r\n"
-
-        return b"HTTP/1.1 404 Not Found\r\n\r\n"
+            if path.startswith("/files/"):
+                filename = path.split("/")[2]
+                if handle_file_post_request(filename, response_body):
+                    response = "HTTP/1.1 201 Created\r\n\r\n"
+                    client_conn.sendall(response.encode())
 
 
 def main():
-    server_side("localhost", 4221)
+    parser = argparse.ArgumentParser(prog="http-server")
+    parser.add_argument("--directory")
+    args = parser.parse_args()
+    directory = args.directory
+    if directory:
+        print(f"Directory given: {directory}")
+        global files_dir
+        files_dir = directory
+
+    port = 4221
+    server_socket = socket.create_server(("localhost", port), reuse_port=True)
+    print(f"Server listening on port: {port}")
+
+    while True:
+        conn, addr = server_socket.accept()
+        thread = threading.Thread(target=handle_request, args=(conn, addr))
+        thread.start()
 
 
 if __name__ == "__main__":
