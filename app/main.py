@@ -27,14 +27,11 @@ class server_side:
     def handle_client(self, connection):
         with connection:
             try:
-                # Receive enough data to get the headers first.
                 recv = connection.recv(1024)
 
                 if not recv:
                     return
 
-                # If this is a POST request, make sure we receive
-                # the complete request body.
                 if recv.startswith(b"POST"):
                     while b"\r\n\r\n" not in recv:
                         recv += connection.recv(1024)
@@ -61,7 +58,6 @@ class server_side:
                 print(e)
 
     def user_request(self, recv):
-        # Separate headers and body.
         parts = recv.split(b"\r\n\r\n", 1)
 
         header_bytes = parts[0]
@@ -72,7 +68,6 @@ class server_side:
         if not request:
             return b"HTTP/1.1 400 Bad Request\r\n\r\n"
 
-        # Request line: METHOD /path HTTP/1.1
         request_line = request[0].split(" ")
 
         if len(request_line) < 3:
@@ -83,36 +78,56 @@ class server_side:
 
         paths = path.split("/")
 
-        # User-Agent header
         user_agent = ""
+        accept_encoding = ""
 
-        for line in request:
+        for line in request[1:]:
             if line.lower().startswith("user-agent:"):
                 user_agent = line.split(":", 1)[1].strip()
 
-        if method == "GET" and paths[1] == "echo":
-            echo = paths[2]
+            elif line.lower().startswith("accept-encoding:"):
+                accept_encoding = line.split(":", 1)[1].strip()
 
-            data = (
-                f"HTTP/1.1 200 OK\r\n"
-                f"Content-Type: text/plain\r\n"
-                f"Content-Length: {len(echo.encode())}\r\n"
-                f"\r\n"
-                f"{echo}"
+        # Check whether the client supports gzip.
+        supports_gzip = "gzip" in [
+            encoding.strip()
+            for encoding in accept_encoding.split(",")
+        ]
+
+        if method == "GET" and len(paths) >= 3 and paths[1] == "echo":
+            echo = paths[2]
+            echo_bytes = echo.encode()
+
+            response = (
+                b"HTTP/1.1 200 OK\r\n"
+                b"Content-Type: text/plain\r\n"
             )
 
-            return data.encode()
+            if supports_gzip:
+                response += b"Content-Encoding: gzip\r\n"
+
+            response += (
+                f"Content-Length: {len(echo_bytes)}\r\n"
+                f"\r\n"
+            ).encode()
+
+            response += echo_bytes
+
+            return response
 
         elif method == "GET" and paths[1] == "user-agent":
+            user_agent_bytes = user_agent.encode()
+
             data = (
-                f"HTTP/1.1 200 OK\r\n"
-                f"Content-Type: text/plain\r\n"
-                f"Content-Length: {len(user_agent.encode())}\r\n"
+                b"HTTP/1.1 200 OK\r\n"
+                b"Content-Type: text/plain\r\n"
+                + f"Content-Length: {len(user_agent_bytes)}\r\n"
                 f"\r\n"
-                f"{user_agent}"
+                .encode()
+                + user_agent_bytes
             )
 
-            return data.encode()
+            return data
 
         elif method == "GET" and path == "/":
             return b"HTTP/1.1 200 OK\r\n\r\n"
@@ -121,7 +136,6 @@ class server_side:
             self.running = False
             return b"HTTP/1.1 200 OK\r\n\r\n"
 
-        # GET /files/{filename}
         elif (
             method == "GET"
             and len(paths) >= 3
@@ -142,7 +156,6 @@ class server_side:
 
             return data
 
-        # POST /files/{filename}
         elif method == "POST" and len(paths) >= 3 and paths[1] == "files":
             file_path = Path(sys.argv[2], paths[2])
 
