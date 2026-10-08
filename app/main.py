@@ -48,13 +48,20 @@ def handle_request(client_conn, client_addr):
                     connection_close = True
                     break
 
+            # Helper to append Connection: close header if required
+            def format_response(status_line, extra_headers="", body=""):
+                con_header = "Connection: close\r\n" if connection_close else ""
+                return f"{status_line}\r\n{con_header}{extra_headers}Content-Length: {len(body)}\r\n\r\n{body}"
+
             if method == "GET":
                 if path == "/":
-                    response = "HTTP/1.1 200 OK\r\n\r\n"
+                    if connection_close:
+                        response = "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n"
+                    else:
+                        response = "HTTP/1.1 200 OK\r\n\r\n"
                     client_conn.sendall(response.encode())
                 elif path.startswith("/echo/"):
                     content = path.split("/")[2]
-                    content_len = len(content)
                     
                     # Check Accept-Encoding for gzip
                     gzipped = False
@@ -65,58 +72,70 @@ def handle_request(client_conn, client_addr):
                     
                     if gzipped:
                         compressed_body = gzip.compress(content.encode())
+                        con_header = "Connection: close\r\n" if connection_close else ""
                         response = (
                             f"HTTP/1.1 200 OK\r\n"
                             f"Content-Type: text/plain\r\n"
                             f"Content-Encoding: gzip\r\n"
+                            f"{con_header}"
                             f"Content-Length: {len(compressed_body)}\r\n\r\n"
                         )
                         client_conn.sendall(response.encode() + compressed_body)
                     else:
-                        response = (
-                            f"HTTP/1.1 200 OK\r\n"
-                            f"Content-Type: text/plain\r\n"
-                            f"Content-Length: {content_len}\r\n\r\n"
-                            f"{content}"
-                        )
+                        extra = "Content-Type: text/plain\r\n"
+                        response = format_response("HTTP/1.1 200 OK", extra, content)
                         client_conn.sendall(response.encode())
                         
                 elif path.startswith("/user-agent"):
                     user_agent = None
                     for header in headers:
                         if header.startswith("User-Agent"):
-                            # Safer header value extraction
                             parts = header.split(":", 1)
                             if len(parts) > 1:
                                 user_agent = parts[1].strip()
                     if user_agent:
                         print(f"Parsed User-Agent: {user_agent}")
-                        response = f"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {len(user_agent)}\r\n\r\n{user_agent}"
+                        extra = "Content-Type: text/plain\r\n"
+                        response = format_response("HTTP/1.1 200 OK", extra, user_agent)
                         client_conn.sendall(response.encode())
                     else:
-                        response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 0\r\n\r\n"
+                        extra = "Content-Type: text/plain\r\n"
+                        response = format_response("HTTP/1.1 200 OK", extra, "")
                         client_conn.sendall(response.encode())
                 elif path.startswith("/files/"):
                     filename = path.split("/")[2]
                     content = handle_file_get_request(filename)
                     if content:
-                        response = f"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {len(content)}\r\n\r\n{content}"
+                        extra = "Content-Type: application/octet-stream\r\n"
+                        response = format_response("HTTP/1.1 200 OK", extra, content)
                         client_conn.sendall(response.encode())
                     else:
-                        response = "HTTP/1.1 404 Not Found\r\n\r\n"
+                        if connection_close:
+                            response = "HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n"
+                        else:
+                            response = "HTTP/1.1 404 Not Found\r\n\r\n"
                         client_conn.sendall(response.encode())
                 else:
-                    response = "HTTP/1.1 404 Not Found\r\n\r\n"
+                    if connection_close:
+                        response = "HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n"
+                    else:
+                        response = "HTTP/1.1 404 Not Found\r\n\r\n"
                     client_conn.sendall(response.encode())
 
             elif method == "POST":
                 if path.startswith("/files/"):
                     filename = path.split("/")[2]
                     if handle_file_post_request(filename, response_body):
-                        response = "HTTP/1.1 201 Created\r\n\r\n"
+                        if connection_close:
+                            response = "HTTP/1.1 201 Created\r\nConnection: close\r\n\r\n"
+                        else:
+                            response = "HTTP/1.1 201 Created\r\n\r\n"
                         client_conn.sendall(response.encode())
                     else:
-                        response = "HTTP/1.1 500 Internal Server Error\r\n\r\n"
+                        if connection_close:
+                            response = "HTTP/1.1 500 Internal Server Error\r\nConnection: close\r\n\r\n"
+                        else:
+                            response = "HTTP/1.1 500 Internal Server Error\r\n\r\n"
                         client_conn.sendall(response.encode())
 
             if connection_close:
