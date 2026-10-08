@@ -2,6 +2,7 @@ import socket
 from threading import Thread
 import sys
 from pathlib import Path
+import gzip
 
 
 class server_side:
@@ -12,7 +13,11 @@ class server_side:
         self.start_server()
 
     def start_server(self):
-        with socket.create_server((self.host, self.port), reuse_port=True) as server:
+        with socket.create_server(
+            (self.host, self.port),
+            reuse_port=True
+        ) as server:
+
             print(f"Server is open on port {self.port}")
 
             while self.running:
@@ -32,6 +37,7 @@ class server_side:
                 if not recv:
                     return
 
+                # Receive the complete POST request body
                 if recv.startswith(b"POST"):
                     while b"\r\n\r\n" not in recv:
                         recv += connection.recv(1024)
@@ -44,7 +50,9 @@ class server_side:
 
                     for line in headers:
                         if line.lower().startswith("content-length:"):
-                            content_length = int(line.split(":", 1)[1].strip())
+                            content_length = int(
+                                line.split(":", 1)[1].strip()
+                            )
 
                     while len(body) < content_length:
                         body += connection.recv(1024)
@@ -88,15 +96,24 @@ class server_side:
             elif line.lower().startswith("accept-encoding:"):
                 accept_encoding = line.split(":", 1)[1].strip()
 
-        # Check whether the client supports gzip.
+        # Check whether the client supports gzip
         supports_gzip = "gzip" in [
-            encoding.strip()
+            encoding.strip().lower()
             for encoding in accept_encoding.split(",")
         ]
 
-        if method == "GET" and len(paths) >= 3 and paths[1] == "echo":
+        # GET /echo/{str}
+        if (
+            method == "GET"
+            and len(paths) >= 3
+            and paths[1] == "echo"
+        ):
             echo = paths[2]
             echo_bytes = echo.encode()
+
+            # Compress the response body if gzip is supported
+            if supports_gzip:
+                echo_bytes = gzip.compress(echo_bytes)
 
             response = (
                 b"HTTP/1.1 200 OK\r\n"
@@ -115,27 +132,31 @@ class server_side:
 
             return response
 
-        elif method == "GET" and paths[1] == "user-agent":
+        # GET /user-agent
+        elif method == "GET" and len(paths) >= 2 and paths[1] == "user-agent":
             user_agent_bytes = user_agent.encode()
 
             data = (
                 b"HTTP/1.1 200 OK\r\n"
                 b"Content-Type: text/plain\r\n"
                 + f"Content-Length: {len(user_agent_bytes)}\r\n"
-                f"\r\n"
-                .encode()
+                f"\r\n".encode()
                 + user_agent_bytes
             )
 
             return data
 
+        # GET /
         elif method == "GET" and path == "/":
             return b"HTTP/1.1 200 OK\r\n\r\n"
 
-        elif method == "GET" and paths[1] == "quit":
+        # GET /quit
+        elif method == "GET" and len(paths) >= 2 and paths[1] == "quit":
             self.running = False
+
             return b"HTTP/1.1 200 OK\r\n\r\n"
 
+        # GET /files/{filename}
         elif (
             method == "GET"
             and len(paths) >= 3
@@ -156,7 +177,12 @@ class server_side:
 
             return data
 
-        elif method == "POST" and len(paths) >= 3 and paths[1] == "files":
+        # POST /files/{filename}
+        elif (
+            method == "POST"
+            and len(paths) >= 3
+            and paths[1] == "files"
+        ):
             file_path = Path(sys.argv[2], paths[2])
 
             with open(file_path, "wb") as file:
@@ -164,6 +190,7 @@ class server_side:
 
             return b"HTTP/1.1 201 Created\r\n\r\n"
 
+        # Unknown route
         else:
             return b"HTTP/1.1 404 Not Found\r\n\r\n"
 
