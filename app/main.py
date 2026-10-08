@@ -20,12 +20,26 @@ def parse_request(data):
         request_line = request_data[0]
         method, path, http_version = request_line.split()
 
-        if method == "GET" and path == "/":
-            return "HTTP/1.1 200 OK\r\n\r\nHello, World!"
-        elif path.startswith("/echo/"):
-            return f"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {len(path[6:])}\r\n\r\n{path[6:]}"
-        else:
-            return "HTTP/1.1 404 Not Found\r\n\r\nNot Found"
+        # Parse headers into a dictionary (case-insensitive for keys)
+        headers = {}
+        for line in request_data[1:]:
+            if not line:
+                break
+            if ":" in line:
+                key, value = line.split(":", 1)
+                headers[key.strip().lower()] = value.strip()
+
+        if method == "GET":
+            if path == "/":
+                return "HTTP/1.1 200 OK\r\n\r\nHello, World!"
+            elif path.startswith("/echo/"):
+                echo_str = path[6:]
+                return f"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {len(echo_str)}\r\n\r\n{echo_str}"
+            elif path == "/user-agent":
+                user_agent = headers.get("user-agent", "")
+                return f"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {len(user_agent)}\r\n\r\n{user_agent}"
+        
+        return "HTTP/1.1 404 Not Found\r\n\r\nNot Found"
     except Exception as e:
         print(f"Error parsing request: {e}")
         return "HTTP/1.1 400 Bad Request\r\n\r\nBad Request"
@@ -33,7 +47,7 @@ def parse_request(data):
 
 def main():
     print("Server is starting...")
-    server_socket = socket.create_server(("localhost", 4221))
+    server_socket = socket.create_server(("localhost", 4221), reuse_port=True)
     server_socket.listen()
 
     try:
