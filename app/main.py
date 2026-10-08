@@ -1,49 +1,52 @@
-import socket  # noqa: F401
+import socket
+
+
+def handle_requests(client_socket):
+    try:
+        data = client_socket.recv(1024)
+        if not data:
+            return
+        response = parse_request(data)
+        client_socket.sendall(response.encode())
+    except Exception as e:
+        print(f"Error handling request: {e}")
+    finally:
+        client_socket.close()
+
+
+def parse_request(data):
+    try:
+        request_data = data.decode().split("\r\n")
+        request_line = request_data[0]
+        method, path, http_version = request_line.split()
+
+        if method == "GET" and path == "/":
+            return "HTTP/1.1 200 OK\r\n\r\nHello, World!"
+        elif path.startswith("/echo/"):
+            return f"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {len(path[6:])}\r\n\r\n{path[6:]}"
+        else:
+            return "HTTP/1.1 404 Not Found\r\n\r\nNot Found"
+    except Exception as e:
+        print(f"Error parsing request: {e}")
+        return "HTTP/1.1 400 Bad Request\r\n\r\nBad Request"
 
 
 def main():
-    print("Logs from your program will appear here!")
+    print("Server is starting...")
+    server_socket = socket.create_server(("localhost", 4221))
+    server_socket.listen()
 
-    server_socket = socket.create_server(("localhost", 4221), reuse_port=True)
-    
-    # Run in a loop so the server stays up for multiple requests/tests
-    while True:
-        try:
-            conn, address = server_socket.accept()
-            
-            # Read the request data
-            request = conn.recv(1024)
-            if not request:
-                conn.close()
-                continue
-                
-            # Parse the request line
-            request_lines = request.decode("utf-8").split("\r\n")
-            request_line = request_lines[0]
-            parts = request_line.split(" ")
-            path = parts[1] if len(parts) > 1 else "/"
-            
-            # Handle routing
-            if path == "/":
-                response = b"HTTP/1.1 200 OK\r\n\r\n"
-            elif path.startswith("/echo/"):
-                echo_str = path[len("/echo/"):]
-                body = echo_str.encode("utf-8")
-                
-                # Fixed: Use bytes for the Content-Length header string too
-                response = (
-                    b"HTTP/1.1 200 OK\r\n"
-                    b"Content-Type: text/plain\r\n"
-                    f"Content-Length: {len(body)}\r\n".encode("utf-8") +
-                    b"\r\n" + body
-                )
-            else:
-                response = b"HTTP/1.1 404 Not Found\r\n\r\n"
-                
-            conn.sendall(response)
-            conn.close()
-        except Exception as e:
-            print(f"Error handling connection: {e}")
+    try:
+        while True:
+            client_socket, address = server_socket.accept()
+            print(f"Connection from {address}")
+            handle_requests(client_socket)
+    except KeyboardInterrupt:
+        print("Server is shutting down...")
+    except Exception as e:
+        print(f"Server error: {e}")
+    finally:
+        server_socket.close()
 
 
 if __name__ == "__main__":
