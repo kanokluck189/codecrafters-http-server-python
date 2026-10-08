@@ -11,17 +11,27 @@ def main():
     # Read the request data
     request = conn.recv(1024)
     
-    # Parse the request line (e.g., "GET /index.html HTTP/1.1")
+    # Parse the request line
     request_lines = request.decode("utf-8").split("\r\n")
     request_line = request_lines[0]
-    
-    # Extract the method and the path
     parts = request_line.split(" ")
     path = parts[1] if len(parts) > 1 else "/"
     
-    # Respond based on the path
+    # Handle routing
     if path == "/":
         response = b"HTTP/1.1 200 OK\r\n\r\n"
+    elif path.startswith("/echo/"):
+        # Extract the string after /echo/
+        echo_str = path[len("/echo/"):]
+        body = echo_str.encode("utf-8")
+        
+        # Build response with headers and body
+        response = (
+            b"HTTP/1.1 200 OK\r\n"
+            b"Content-Type: text/plain\r\n"
+            f"Content-Length: {len(body)}\r\n"
+            b"\r\n" + body
+        )
     else:
         response = b"HTTP/1.1 404 Not Found\r\n\r\n"
         
