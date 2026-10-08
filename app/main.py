@@ -2,7 +2,6 @@ import socket
 from threading import Thread
 import sys
 from pathlib import Path
-import gzip
 
 
 class server_side:
@@ -10,189 +9,109 @@ class server_side:
         self.host = host
         self.port = port
         self.running = True
+        self.files_dir = self.parse_directory()
         self.start_server()
 
+    def parse_directory(self):
+        for i in range(len(sys.argv) - 1):
+            if sys.argv[i] == "--directory":
+                return sys.argv[i + 1]
+        return "."
+
     def start_server(self):
-        with socket.create_server(
-            (self.host, self.port),
-            reuse_port=True
-        ) as server:
-
+        with socket.create_server((self.host, self.port), reuse_port=True) as server:
             print(f"Server is open on port {self.port}")
-
             while self.running:
                 connection, address = server.accept()
-
-                thread = Thread(
-                    target=self.handle_client,
-                    args=(connection,)
-                )
+                thread = Thread(target=self.handle_client, args=(connection,))
+                thread.daemon = True
                 thread.start()
 
     def handle_client(self, connection):
-        with connection:
-            try:
-                recv = connection.recv(1024)
-
+        # Removed the 'with connection:' block so it doesn't auto-close after one request
+        try:
+            while self.running:
+                recv = connection.recv(4096)
                 if not recv:
-                    return
-
-                # Receive the complete POST request body
-                if recv.startswith(b"POST"):
-                    while b"\r\n\r\n" not in recv:
-                        recv += connection.recv(1024)
-
-                    header_part, body = recv.split(b"\r\n\r\n", 1)
-
-                    headers = header_part.decode().split("\r\n")
-
-                    content_length = 0
-
-                    for line in headers:
-                        if line.lower().startswith("content-length:"):
-                            content_length = int(
-                                line.split(":", 1)[1].strip()
-                            )
-
-                    while len(body) < content_length:
-                        body += connection.recv(1024)
-
-                    recv = header_part + b"\r\n\r\n" + body
-
+                    break  # Client closed connection or no more data
+                
                 respond = self.user_request(recv)
                 connection.sendall(respond)
-
-            except Exception as e:
-                print(e)
+                
+                # Optional: Check if request explicitly specified connection: close
+                if b"connection: close" in recv.lower():
+                    break
+        except Exception as e:
+            print(f"Connection error: {e}")
+        finally:
+                        connection.close()
 
     def user_request(self, recv):
-        parts = recv.split(b"\r\n\r\n", 1)
+        try:
+            header_data, body_data = recv.split(b"\r\n\r\n", 1)
+        except ValueError:
+            header_data = recv
+            body_data = b""
 
-        header_bytes = parts[0]
-        body = parts[1] if len(parts) > 1 else b""
-
-        request = header_bytes.decode().split("\r\n")
-
-        if not request:
+        request_lines = header_data.decode("utf-8", errors="ignore").split("\r\n")
+        if not request_lines or not request_lines[0]:
             return b"HTTP/1.1 400 Bad Request\r\n\r\n"
 
-        request_line = request[0].split(" ")
-
-        if len(request_line) < 3:
+        request_line = request_lines[0].split(" ")
+        if len(request_line) < 2:
             return b"HTTP/1.1 400 Bad Request\r\n\r\n"
-
+            
         method = request_line[0]
         path = request_line[1]
-
         paths = path.split("/")
 
-        user_agent = ""
-        accept_encoding = ""
+        headers = {}
+        for line in request_lines[1:]:
+            if ":" in line:
+                key, value = line.split(":", 1)
+                headers[key.strip().lower()] = value.strip()
 
-        for line in request[1:]:
-            if line.lower().startswith("user-agent:"):
-                user_agent = line.split(":", 1)[1].strip()
+        user_agent = headers.get("user-agent", "")
 
-            elif line.lower().startswith("accept-encoding:"):
-                accept_encoding = line.split(":", 1)[1].strip()
+        if method == "GET":
+            if path == "/":
+                return b"HTTP/1.1 200 OK\r\n\r\n"
+            elif len(paths) > 1 and paths[1] == "echo":
+                echo = paths[2] if len(paths) > 2 else ""
+                data = f"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {len(echo)}\r\n\r\n{echo}"
+                return data.encode()
+            elif len(paths) > 1 and paths[1] == "user-agent":
+                data = f"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {len(user_agent)}\r\n\r\n{user_agent}"
+                return data.encode()
+            elif len(paths) > 1 and paths[1] == "files":
+                filename = paths[2] if len(paths) > 2 else ""
+                file_path = Path(self.files_dir) / filename
+                if file_path.exists() and file_path.is_file():
+                    content = file_path.read_bytes()
+                    return (
+                        b"HTTP/1.1 200 OK\r\n"
+                        b"Content-Type: application/octet-stream\r\n"
+                        f"Content-Length: {len(content)}\r\n\r\n".encode() + content
+                    )
+                else:
+                    return b"HTTP/1.1 404 Not Found\r\n\r\n"
+            elif len(paths) > 1 and paths[1] == "quit":
+                self.running = False
+                return b"HTTP/1.1 200 OK\r\n\r\n"
+            else:
+                return b"HTTP/1.1 404 Not Found\r\n\r\n"
 
-        # Check whether the client supports gzip
-        supports_gzip = "gzip" in [
-            encoding.strip().lower()
-            for encoding in accept_encoding.split(",")
-        ]
+        elif method == "POST":
+            if len(paths) > 1 and paths[1] == "files":
+                filename = paths[2] if len(paths) > 2 else ""
+                file_path = Path(self.files_dir) / filename
+                content_length = int(headers.get("content-length", 0))
+                file_path.write_bytes(body_data[:content_length])
+                return b"HTTP/1.1 201 Created\r\n\r\n"
+            else:
+                return b"HTTP/1.1 404 Not Found\r\n\r\n"
 
-        # GET /echo/{str}
-        if (
-            method == "GET"
-            and len(paths) >= 3
-            and paths[1] == "echo"
-        ):
-            echo = paths[2]
-            echo_bytes = echo.encode()
-
-            # Compress the response body if gzip is supported
-            if supports_gzip:
-                echo_bytes = gzip.compress(echo_bytes)
-
-            response = (
-                b"HTTP/1.1 200 OK\r\n"
-                b"Content-Type: text/plain\r\n"
-            )
-
-            if supports_gzip:
-                response += b"Content-Encoding: gzip\r\n"
-
-            response += (
-                f"Content-Length: {len(echo_bytes)}\r\n"
-                f"\r\n"
-            ).encode()
-
-            response += echo_bytes
-
-            return response
-
-        # GET /user-agent
-        elif method == "GET" and len(paths) >= 2 and paths[1] == "user-agent":
-            user_agent_bytes = user_agent.encode()
-
-            data = (
-                b"HTTP/1.1 200 OK\r\n"
-                b"Content-Type: text/plain\r\n"
-                + f"Content-Length: {len(user_agent_bytes)}\r\n"
-                f"\r\n".encode()
-                + user_agent_bytes
-            )
-
-            return data
-
-        # GET /
-        elif method == "GET" and path == "/":
-            return b"HTTP/1.1 200 OK\r\n\r\n"
-
-        # GET /quit
-        elif method == "GET" and len(paths) >= 2 and paths[1] == "quit":
-            self.running = False
-
-            return b"HTTP/1.1 200 OK\r\n\r\n"
-
-        # GET /files/{filename}
-        elif (
-            method == "GET"
-            and len(paths) >= 3
-            and paths[1] == "files"
-            and Path(sys.argv[2], paths[2]).exists()
-        ):
-            file_path = Path(sys.argv[2], paths[2])
-
-            with open(file_path, "rb") as file:
-                content = file.read()
-
-            data = (
-                b"HTTP/1.1 200 OK\r\n"
-                b"Content-Type: application/octet-stream\r\n"
-                + f"Content-Length: {len(content)}\r\n\r\n".encode()
-                + content
-            )
-
-            return data
-
-        # POST /files/{filename}
-        elif (
-            method == "POST"
-            and len(paths) >= 3
-            and paths[1] == "files"
-        ):
-            file_path = Path(sys.argv[2], paths[2])
-
-            with open(file_path, "wb") as file:
-                file.write(body)
-
-            return b"HTTP/1.1 201 Created\r\n\r\n"
-
-        # Unknown route
-        else:
-            return b"HTTP/1.1 404 Not Found\r\n\r\n"
+        return b"HTTP/1.1 404 Not Found\r\n\r\n"
 
 
 def main():
