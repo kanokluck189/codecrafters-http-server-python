@@ -1,4 +1,5 @@
 import socket
+import threading
 
 
 def handle_requests(client_socket):
@@ -31,7 +32,7 @@ def parse_request(data):
 
         if method == "GET":
             if path == "/":
-                return "HTTP/1.1 200 OK\r\n\r\nHello, World!"
+                return "HTTP/1.1 200 OK\r\n\r\n"
             elif path.startswith("/echo/"):
                 echo_str = path[6:]
                 return f"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {len(echo_str)}\r\n\r\n{echo_str}"
@@ -54,7 +55,12 @@ def main():
         while True:
             client_socket, address = server_socket.accept()
             print(f"Connection from {address}")
-            handle_requests(client_socket)
+            
+            # Spawn a new thread for each incoming connection
+            client_thread = threading.Thread(target=handle_requests, args=(client_socket,))
+            client_thread.daemon = True
+            client_thread.start()
+            
     except KeyboardInterrupt:
         print("Server is shutting down...")
     except Exception as e:
